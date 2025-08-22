@@ -6,7 +6,7 @@ from threading import Thread
 import time
 import re
 import json
-from queue import Queue # নতুন কিউ সিস্টেমের জন্য
+from queue import Queue # কিউ সিস্টেমের জন্য
 
 # --- Bot Configuration ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -30,39 +30,49 @@ DB_FILE = "bot_database.json"
 db = {}
 
 def save_db():
-    # ... (no change)
     with open(DB_FILE, 'w') as f:
         json.dump(db, f, indent=4)
 
 def load_db():
-    # ... (no change)
     global db
     if os.path.exists(DB_FILE):
         with open(DB_FILE, 'r') as f:
-            db = json.load(f)
+            try:
+                db = json.load(f)
+            except json.JSONDecodeError:
+                db = {'users': {}}
     else:
         db = {'users': {}}
 
-# --- START: নতুন কিউ সিস্টেম ---
+# --- Queue System ---
 upload_queue = Queue()
 
-# --- Helper Functions (অপরিবর্তিত) ---
-def is_url(text): #...
-def is_admin(user_id): #...
-def get_user(user_id): #...
+# --- Helper Functions ---
+def is_url(text):
+    url_pattern = re.compile(
+        r'^(?:http|ftp)s?://'
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'
+        r'localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
+        r'(?::\d+)?(?:/?|[/?]\S+)$', re.IGNORECASE)
+    return re.match(url_pattern, text) is not None
+
+def is_admin(user_id):
+    return user_id == ADMIN_ID
+
+def get_user(user_id):
+    user_id_str = str(user_id)
+    if 'users' not in db:
+        db['users'] = {}
+    if user_id_str not in db['users']:
+        db['users'][user_id_str] = {'api_key': None, 'custom_domain': None}
+    return db['users'][user_id_str]
 
 # --- Background Upload Processing ---
-# এই ফাংশনটি এখন সরাসরি কল না হয়ে, কিউ থেকে কল হবে
 def process_upload_from_url(message, url):
-    # ... (এই ফাংশনের ভেতরের সবকিছু অপরিবর্তিত)
     user_id = message.chat.id
     user_data = get_user(user_id)
     api_key = user_data.get('api_key')
     
-    if not api_key:
-        bot.send_message(user_id, "❌ **API Key not set!**\nPlease use `/setkey` to set your API Key first.")
-        return
-
     status_msg = bot.send_message(user_id, f"▶️ **Starting upload for:**\n`{url}`")
     file_path_on_disk = None
     try:
@@ -109,54 +119,135 @@ def process_upload_from_url(message, url):
             os.remove(file_path_on_disk)
         save_db()
 
-
 # --- Worker Function (কিউ থেকে কাজ নেওয়ার জন্য) ---
 def worker():
     while True:
-        # কিউ থেকে একটি আইটেম (কাজ) নাও
         message, url = upload_queue.get()
-        
-        # কাজটি প্রসেস করো
-        process_upload_from_url(message, url)
-        
-        # কাজ শেষ হয়েছে বলে চিহ্নিত করো
-        upload_queue.task_done()
+        if message is None: # A way to stop the thread if needed
+            break
+        try:
+            process_upload_from_url(message, url)
+        except Exception as e:
+            print(f"Error in worker processing task: {e}")
+        finally:
+            upload_queue.task_done()
 
-# --- User Handlers (ব্যবহারকারীর কমান্ড হ্যান্ডেল করার জন্য) ---
+# --- User Handlers ---
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    user_id = message.from_user.id
+    get_user(user_id)
+    save_db()
+    
+    welcome_text = (f"👋 Hello, {message.from_user.first_name}!\n\n"
+                    "Welcome to the advanced RPM Share Uploader Bot.\n"
+                    "To get started, you need to set your RPM Share API Key.\n\n"
+                    "➡️ Use the command: `/setkey YOUR_API_KEY`\n\n"
+                    "💡 Use /help to see all commands.\n\n"
+                    "__Created by: MD SALMAN__")
+    bot.reply_to(message, welcome_text)
+
+@bot.message_handler(commands=['setkey'])
+def set_api_key(message):
+    try:
+        key = message.text.split(maxsplit=1)[1].strip()
+        user_data = get_user(message.from_user.id)
+        user_data['api_key'] = key
+        save_db()
+        bot.reply_to(message, "✅ Your RPM Share API Key has been saved successfully!")
+    except IndexError:
+        bot.reply_to(message, "⚠️ Please provide an API Key.\n*Usage:* `/setkey YOUR_API_KEY`")
+
+@bot.message_handler(commands=['setdomain'])
+def set_custom_domain(message):
+    try:
+        domain = message.text.split(maxsplit=1)[1].strip()
+        if not is_url(domain):
+            bot.reply_to(message, "❌ Invalid URL format.")
+            return
+        
+        user_data = get_user(message.from_user.id)
+        user_data['custom_domain'] = domain
+        save_db()
+        bot.reply_to(message, f"✅ Your custom domain has been set to:\n`{domain}`")
+    except IndexError:
+        bot.reply_to(message, "⚠️ Please provide a domain URL.\n*Usage:* `/setdomain https://your-site.com/`")
+
+@bot.message_handler(commands=['my_settings'])
+def show_my_settings(message):
+    user_data = get_user(message.from_user.id)
+    api_key = user_data.get('api_key')
+    domain = user_data.get('custom_domain') or f"{DEFAULT_DOMAIN} (Default)"
+    
+    settings_text = ("⚙️ **Your Current Settings**\n\n"
+                     f"🔑 **API Key:** `{'********' + api_key[-4:] if api_key else 'Not Set'}`\n"
+                     f"🌐 **Domain URL:** `{domain}`")
+    bot.reply_to(message, settings_text)
+
+@bot.message_handler(commands=['help'])
+def send_help(message):
+    help_text = ("**Here's how to use me:**\n"
+                 "1️⃣ Set your RPM Share API Key:\n`/setkey YOUR_API_KEY`\n\n"
+                 "2️⃣ (Optional) Set your custom domain URL:\n`/setdomain https://your-site.com/`\n\n"
+                 "3️⃣ Send me any direct download link to upload.\n\n"
+                 "**Other Commands:**\n"
+                 "`/my_settings` - View your saved settings.")
+    if is_admin(message.from_user.id):
+        help_text += ("\n\n👑 **Admin Commands:**\n"
+                      "/stats - Get user statistics.\n"
+                      "/broadcast <message> - Send a message to all users.")
+    bot.reply_to(message, help_text)
 
 @bot.message_handler(func=lambda message: is_url(message.text))
 def handle_url(message):
     user_id = message.from_user.id
     user_data = get_user(user_id)
     
-    # API Key সেট করা আছে কিনা তা পরীক্ষা করা
     if not user_data.get('api_key'):
-        bot.reply_to(message, "❌ **API Key not set!**\nPlease use `/setkey <your_api_key>` to set your API Key first.")
+        bot.reply_to(message, "❌ **API Key not set!**\nPlease use `/setkey` first.")
         return
 
-    # কাজটি কিউতে যোগ করা
     url = message.text
     upload_queue.put((message, url))
-    
-    # ব্যবহারকারীকে তার সিরিয়াল নম্বর জানানো
     queue_position = upload_queue.qsize()
     bot.reply_to(message, f"✅ Your link has been added to the queue.\n**Position:** `{queue_position}`")
 
-# ... (আপনার বাকি সব কমান্ড /start, /setkey, /setdomain, /help, /stats, /broadcast অপরিবর্তিত থাকবে)
-@bot.message_handler(commands=['start']) #...
-@bot.message_handler(commands=['setkey']) #...
-@bot.message_handler(commands=['setdomain']) #...
-@bot.message_handler(commands=['my_settings']) #...
-@bot.message_handler(commands=['help']) #...
-@bot.message_handler(commands=['stats']) #...
-@bot.message_handler(commands=['broadcast']) #...
-# (For brevity, I'm not pasting them again. Just keep them as they were in the previous code)
+# --- Admin Handlers ---
+@bot.message_handler(commands=['stats'])
+def get_stats(message):
+    if not is_admin(message.from_user.id):
+        return
+    total_users = len(db.get('users', {}))
+    bot.reply_to(message, f"📊 **Total Users:** {total_users}\n📝 **Tasks in Queue:** {upload_queue.qsize()}")
+
+@bot.message_handler(commands=['broadcast'])
+def broadcast_message(message):
+    if not is_admin(message.from_user.id):
+        return
+    try:
+        broadcast_text = message.text.split(maxsplit=1)[1]
+    except IndexError:
+        bot.reply_to(message, "Usage: `/broadcast <message>`")
+        return
+    
+    users = db.get('users', {}).keys()
+    status_msg = bot.reply_to(message, f"📣 Broadcasting to {len(users)} users...")
+    sent, failed = 0, 0
+    for user_id_str in users:
+        try:
+            bot.send_message(int(user_id_str), broadcast_text)
+            sent += 1
+        except Exception:
+            failed += 1
+        time.sleep(0.1)
+    result_text = f"✅ Broadcast Complete!\n\nSent: {sent}\nFailed: {failed}"
+    bot.edit_message_text(result_text, status_msg.chat.id, status_msg.message_id)
+    save_db()
 
 # --- Main Execution ---
 if __name__ == "__main__":
     load_db()
     
-    # --- Worker থ্রেডটি চালু করা ---
     worker_thread = Thread(target=worker, daemon=True)
     worker_thread.start()
     
