@@ -5,12 +5,12 @@ from telebot.types import ForceReply
 from threading import Thread
 import time
 import re
-import json # ডাটাবেস সেভ/লোড করার জন্য
+import json
 
 # --- Bot Configuration ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID = os.environ.get('ADMIN_ID')
-DEFAULT_DOMAIN = os.environ.get('DEFAULT_DOMAIN', 'https://aniwavelite.rpmlive.online/') # আপনার ডিফল্ট ডোমেইন
+DEFAULT_DOMAIN = os.environ.get('DEFAULT_DOMAIN', 'https://aniwavelite.rpmlive.online/')
 
 if not all([BOT_TOKEN, ADMIN_ID]):
     print("FATAL ERROR: BOT_TOKEN or ADMIN_ID environment variables are missing!")
@@ -42,6 +42,7 @@ def load_db():
 
 # --- Helper Functions ---
 def is_url(text):
+    # ... (URL validation code is unchanged)
     url_pattern = re.compile(
         r'^(?:http|ftp)s?://'
         r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'
@@ -71,37 +72,44 @@ def process_upload_from_url(message, url):
         return
 
     status_msg = bot.send_message(user_id, "✅ **Link received!**\nYour download has been queued.")
-    # ... (বাকি আপলোড কোডটি প্রায় একই রকম)
     file_path_on_disk = None
     try:
-        # ... (ডাউনলোড অংশ)
+        # --- START: নতুন এবং গুরুত্বপূর্ণ পরিবর্তন ---
+        # একটি সাধারণ ব্রাউজারের মতো দেখতে হেডার যোগ করা
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        # --- END: নতুন এবং গুরুত্বপূর্ণ পরিবর্তন ---
+
         bot.edit_message_text("📥 **Downloading...**", status_msg.chat.id, status_msg.message_id)
         filename = url.split('/')[-1].split('?')[0] or f"downloaded_file_{int(time.time())}"
         file_path_on_disk = filename
-        with requests.get(url, stream=True, timeout=3600) as r:
+        
+        # ডাউনলোড করার সময় হেডার ব্যবহার করা
+        with requests.get(url, stream=True, timeout=3600, headers=headers) as r:
             r.raise_for_status()
             with open(file_path_on_disk, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=1024*1024): f.write(chunk)
 
         bot.edit_message_text("✅ **Download Complete!**\n\n⬆️ **Uploading to RPM Share...**", status_msg.chat.id, status_msg.message_id)
 
-        # ... (RPM Share আপলোড অংশ)
+        # RPM Share-এর সাথে কথা বলার সময়ও হেডার ব্যবহার করা
         server_url_endpoint = f"https://rpmshare.com/api/upload/server?key={api_key}"
-        server_response = requests.get(server_url_endpoint)
+        server_response = requests.get(server_url_endpoint, headers=headers)
         server_data = server_response.json()
         if server_data.get("status") != 200: raise Exception(server_data.get('msg', 'Could not get RPM server.'))
+        
         actual_upload_url = server_data["result"]
         
         with open(file_path_on_disk, 'rb') as f:
             files_to_upload = {'file': (file_path_on_disk, f)}
             payload = {'key': api_key}
-            upload_response = requests.post(actual_upload_url, files=files_to_upload, data=payload, timeout=3600)
+            upload_response = requests.post(actual_upload_url, files=files_to_upload, data=payload, headers=headers, timeout=3600)
             upload_data = upload_response.json()
 
         if upload_data.get("status") == 200 and upload_data.get("files"):
             file_code = upload_data["files"][0]["filecode"]
             
-            # --- ডাইনামিক ডোমেইন ব্যবহার ---
             base_url = user_data.get('custom_domain') or DEFAULT_DOMAIN
             if not base_url.endswith('/'): base_url += '/'
             
@@ -117,11 +125,12 @@ def process_upload_from_url(message, url):
     finally:
         if file_path_on_disk and os.path.exists(file_path_on_disk):
             os.remove(file_path_on_disk)
-        save_db() # প্রতিটি অপারেশনের পর ডাটাবেস সেভ করা
+        save_db()
 
-# --- User Handlers ---
+# --- User Handlers (এই অংশগুলো অপরিবর্তিত) ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    # ... (no change)
     user_id = message.from_user.id
     get_user(user_id) # Ensure user is in db
     save_db()
@@ -139,6 +148,7 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['setkey'])
 def set_api_key(message):
+    # ... (no change)
     try:
         key = message.text.split(maxsplit=1)[1].strip()
         user_data = get_user(message.from_user.id)
@@ -150,6 +160,7 @@ def set_api_key(message):
 
 @bot.message_handler(commands=['setdomain'])
 def set_custom_domain(message):
+    # ... (no change)
     try:
         domain = message.text.split(maxsplit=1)[1].strip()
         if not is_url(domain):
@@ -165,6 +176,7 @@ def set_custom_domain(message):
 
 @bot.message_handler(commands=['my_settings'])
 def show_my_settings(message):
+    # ... (no change)
     user_data = get_user(message.from_user.id)
     api_key = user_data.get('api_key')
     domain = user_data.get('custom_domain') or f"{DEFAULT_DOMAIN} (Default)"
@@ -176,9 +188,10 @@ def show_my_settings(message):
         "Use `/setkey` and `/setdomain` to change them."
     )
     bot.reply_to(message, settings_text)
-    
+
 @bot.message_handler(commands=['help'])
 def send_help(message):
+    # ... (no change)
     help_text = (
         "**Here's how to use me:**\n"
         "1️⃣ First, set your RPM Share API Key:\n`/setkey YOUR_API_KEY`\n\n"
@@ -201,11 +214,11 @@ def handle_url(message):
     url = message.text
     upload_thread = Thread(target=process_upload_from_url, args=(message, url))
     upload_thread.start()
-    
-# ... (Admin commands: /stats, /broadcast - আগের কোড থেকে কপি করে নিতে পারেন)
-# For brevity, I'll add them here again
+
+# --- Admin Handlers (অপরিবর্তিত) ---
 @bot.message_handler(commands=['stats'])
 def get_stats(message):
+    # ... (no change)
     if not is_admin(message.from_user.id):
         return
     total_users = len(db.get('users', {}))
@@ -213,6 +226,7 @@ def get_stats(message):
 
 @bot.message_handler(commands=['broadcast'])
 def broadcast_message(message):
+    # ... (no change)
     if not is_admin(message.from_user.id):
         return
     try:
