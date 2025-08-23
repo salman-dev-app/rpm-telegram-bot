@@ -89,7 +89,7 @@ def upload_file_task(file_path, url, payload, headers, upload_status):
     try:
         with open(file_path, 'rb') as f:
             files_to_upload = {'file': (os.path.basename(file_path), f)}
-            response = requests.post(url, files=files_to_upload, data=payload, headers=headers, timeout=7200) # 2 hour timeout
+            response = requests.post(url, files=files_to_upload, data=payload, headers=headers, timeout=7200)
             upload_status['result'] = response.json()
     except Exception as e:
         upload_status['error'] = str(e)
@@ -97,12 +97,15 @@ def upload_file_task(file_path, url, payload, headers, upload_status):
         upload_status['done'] = True
 
 # --- Main Processing Function ---
-def process_upload_from_url(message, url):
+def process_upload_from_url(message):
     user_id = message.chat.id
+    url = message.text
     user_data = get_user(user_id)
     api_key = user_data.get('api_key')
     
-    status_msg = bot.send_message(user_id, f"▶️ **Starting upload for:**\n`{url}`")
+    # Send a new reply to the original message, which will be our status message
+    status_msg = bot.reply_to(message, "▶️ **Starting upload...**")
+    
     file_path_on_disk = None
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
@@ -188,7 +191,7 @@ def process_upload_from_url(message, url):
             raise Exception(upload_data.get('msg', 'Upload failed.'))
 
     except Exception as e:
-        error_text = f"❌ **An error occurred with:** `{url}`\n\n`{e}`"
+        error_text = f"❌ **An error occurred with your link:**\n\n`{e}`"
         bot.edit_message_text(error_text, status_msg.chat.id, status_msg.message_id)
     finally:
         if file_path_on_disk and os.path.exists(file_path_on_disk):
@@ -198,11 +201,11 @@ def process_upload_from_url(message, url):
 # --- Worker Function ---
 def worker():
     while True:
-        message, url = upload_queue.get()
+        message = upload_queue.get()
         try:
-            process_upload_from_url(message, url)
+            process_upload_from_url(message)
         except Exception as e:
-            print(f"Error in worker processing task: {e}")
+            print(f"Error in worker processing task for message {message.message_id}: {e}")
         finally:
             upload_queue.task_done()
 
@@ -281,9 +284,10 @@ def handle_url(message):
         bot.reply_to(message, "❌ **API Key not set!**\nPlease use `/setkey` first.")
         return
 
-    url = message.text
-    upload_queue.put((message, url))
+    # Put the entire message object into the queue
+    upload_queue.put(message)
     queue_position = upload_queue.qsize()
+    
     bot.reply_to(message, f"✅ Your link has been added to the queue.\n**Position:** `{queue_position}`")
 
 # --- Admin Handlers ---
